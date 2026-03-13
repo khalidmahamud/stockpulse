@@ -1,0 +1,47 @@
+# =============================================================================
+# StockPulse Base Configuration
+# =============================================================================
+
+# ----- Data Ingestion -----
+stocks:
+  tickers:
+    - AAPL
+    - GOOGL
+    - MSFT
+    - TSLA
+  lookback_days: 365
+
+news:
+  max_articles_per_ticker: 50
+  sentiment_model: "ProsusAI/finbert"
+
+# ----- Feature Engineering -----
+features:
+  sma_windows:
+    - 7
+    - 21
+    - 50
+  ema_windows:
+    - 12
+    - 26
+  rsi_window: 14
+  bollinger_window: 20
+  bollinger_std: 2
+
+# ----- Model Training -----
+model:
+  train_split_ratio: 0.7
+  validation_split_ratio: 0.15
+  test_split_ratio: 0.15
+  random_state: 42
+
+# ----- Monitoring -----
+monitoring:
+  accuracy_threshold: 0.52
+  drift_threshold: 0.1
+  rolling_window_days: 30
+
+# ----- API -----
+api:
+  host: "0.0.0.0"
+  port: 8000
