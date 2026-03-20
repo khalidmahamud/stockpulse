@@ -2,26 +2,28 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from contextlib import contextmanager
 from functools import lru_cache
-from src.utils.config import get_settings
+from src.utils.config import get_database_settings
 
 
 @lru_cache(maxsize=1)
-def get_engine():
-    """Create and return a cached SQLAlchemy engine.
+def get_session_factory():
+    """Create and return a cached SQLAlchemy session factory.
 
     Returns:
-        sqlalchemy.engine.Engine: A configured engine instance with connection
-            pooling (pool_size=5, max_overflow=10) and pre-ping enabled.
+        sqlalchemy.orm.sessionmaker: A session factory bound to a configured
+            engine with connection pooling (pool_size=5, max_overflow=10)
+            and pre-ping enabled.
 
     Note:
-        The engine is cached via ``lru_cache``, so subsequent calls return the
-        same instance without creating a new connection pool.
+        The factory is cached via ``lru_cache``, so subsequent calls return
+        the same instance without creating a new engine or connection pool.
     """
-    url = get_settings()["database"].url
+    url = get_database_settings().url
     engine = create_engine(
         url, pool_size=5, max_overflow=10, pool_pre_ping=True
     )
-    return engine
+
+    return sessionmaker(bind=engine)
 
 
 @contextmanager
@@ -41,14 +43,12 @@ def get_session():
             user.name = "Alice"
         # Transaction is committed here if no exception was raised.
     """
-    engine = get_engine()
-    session_factory = sessionmaker(bind=engine)
-
+    session_factory = get_session_factory()
     session = session_factory()
     try:
         yield session
         session.commit()
-    except:
+    except Exception:
         session.rollback()
         raise
     finally:

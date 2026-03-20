@@ -13,7 +13,7 @@ import logging
 import structlog
 from structlog.typing import Processor
 
-from src.utils.config import get_settings
+from src.utils.config import get_app_settings
 
 
 def setup_logging() -> None:
@@ -22,9 +22,9 @@ def setup_logging() -> None:
     
     Call this once at application startup.
     """
-    settings = get_settings()
-    log_level = settings["app"].log_level
-    environment = settings["app"].environment
+    settings = get_app_settings()
+    log_level = settings.log_level
+    environment = settings.environment
     
     # Determine if we're in development or production
     is_development = environment == "development"

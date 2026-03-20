@@ -52,8 +52,8 @@ class AppSettings(BaseSettings):
     class Config:
         populate_by_name = True
 
-
-def load_yaml_config(config_name: str = "base") -> dict:
+@lru_cache()
+def get_config(config_name: str = "base") -> dict:
     """Load a YAML configuration file."""
     config_path = PROJECT_ROOT / "configs" / f"{config_name}.yaml"
 
@@ -65,19 +65,17 @@ def load_yaml_config(config_name: str = "base") -> dict:
 
 
 @lru_cache()
-def get_settings() -> dict:
-    """
-    Load and cache all settings.
+def get_database_settings() -> DatabaseSettings:
+    """Get database settings, cached for performance."""
+    return DatabaseSettings()
 
-    Returns a dictionary containing:
-        - database: DatabaseSettings
-        - api_keys: APIKeySettings
-        - app: AppSettings
-        - config: dict (from YAML)
-    """
-    return {
-        "database": DatabaseSettings(),
-        "api_keys": APIKeySettings(),
-        "app": AppSettings(),
-        "config": load_yaml_config(),
-    }
+@lru_cache()
+def get_api_key_settings() -> APIKeySettings:
+    """Get API key settings, cached for performance."""
+    return APIKeySettings()
+
+@lru_cache()
+def get_app_settings() -> AppSettings:
+    """Get application settings, cached for performance."""
+    return AppSettings()    
+
