@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from src.utils.logging import get_logger
 from src.data.database import get_session
 from src.data.models import RawStockPrice
+from src.utils.config import get_config
 
 logger = get_logger(__name__)
 
@@ -131,6 +132,7 @@ def transform_stock_data(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     )
     return df
 
+
 def load_stock_data(df: pd.DataFrame) -> None:
     """Upsert transformed stock data into the raw_stock_prices table.
 
@@ -166,3 +168,58 @@ def load_stock_data(df: pd.DataFrame) -> None:
         session.execute(stmt)
 
     logger.info("stock_data_loaded", rows=len(records))
+
+
+def run_stock_ingestion(ticker: str, lookback_days: int) -> None:
+    """Run the full stock data ingestion pipeline for a given ticker and lookback.
+
+    This is a convenience function that orchestrates the extract, transform,
+    and load steps in sequence. It can be called from a higher-level workflow
+    or scheduled task.
+
+    Args:
+        ticker: Stock ticker symbol, e.g. "AAPL".
+        lookback_days: Number of calendar days of history to fetch.
+    """
+    raw_df = extract_stock_data(ticker, lookback_days)
+    transformed_df = transform_stock_data(raw_df, ticker)
+    load_stock_data(transformed_df)
+
+
+def run_all_stocks():
+    """Run the full ingestion pipeline for all configured tickers.
+
+    Reads tickers and lookback_days from the app config, then runs
+    extract → transform → load for each ticker sequentially. Failures
+    are caught per-ticker so one bad ticker does not abort the rest.
+
+    Logs a summary at the end with total, succeeded, and failed counts,
+    including the list of failed ticker symbols for easy debugging.
+    """
+    config = get_config()
+    tickers = config["stocks"]["tickers"]
+    lookback_days = config["stocks"]["lookback_days"]
+
+    succeeded = []
+    failed = []
+
+    for ticker in tickers:
+        try:
+            run_stock_ingestion(ticker=ticker, lookback_days=lookback_days)
+            succeeded.append(ticker)    
+        except Exception as e:
+            failed.append(ticker)
+            logger.error(
+                "stock_ingestion_failed",
+                ticker=ticker,
+                lookback_days=lookback_days,
+                error=str(e),
+            )
+
+    logger.info(
+        "ingestion_complete",
+        total=len(tickers),
+        succeeded=len(succeeded),
+        failed=len(failed),
+        failed_tickers=failed,
+    )

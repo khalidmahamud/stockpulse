@@ -31,7 +31,8 @@ stockpulse/
 │   ├── docker-compose.yaml    # Postgres 17 service with health checks
 │   └── init.sql               # Full DB schema (7 tables, indexes, triggers)
 ├── docs/                      # (empty — reserved for future docs)
-├── scripts/                   # (empty — reserved for CLI/run scripts)
+├── scripts/
+│   └── run_ingestion.py      # CLI entry point: runs stock ingestion for all tickers
 ├── tests/                     # (empty — reserved for pytest tests)
 ├── src/
 │   ├── __init__.py
@@ -39,7 +40,9 @@ stockpulse/
 │   │   └── __init__.py        # (empty — FastAPI endpoints go here, Phase 3)
 │   ├── data/
 │   │   ├── __init__.py
-│   │   └── database.py        # SQLAlchemy engine + session context manager
+│   │   ├── database.py        # SQLAlchemy session factory + context manager
+│   │   ├── models.py          # SQLAlchemy ORM models (RawStockPrice)
+│   │   └── stock_ingestor.py  # ETL pipeline: extract (yfinance), transform, load (upsert)
 │   ├── features/
 │   │   └── __init__.py        # (empty — feature engineering pipeline, Phase 1)
 │   ├── models/
@@ -75,7 +78,7 @@ stockpulse/
 | Database | PostgreSQL 17 (Docker) | All persistent storage |
 | ORM | `sqlalchemy` + `psycopg2-binary` | DB connections and queries |
 | API | `fastapi` + `uvicorn` | Prediction REST API |
-| Config | `pydantic-settings`, `pyyaml` | Type-safe settings from env + YAML |
+| Config | `pydantic-settings`, `pyyaml` | Type-safe settings from env + YAML (**Note:** `pyyaml` is missing from `pyproject.toml` dependencies) |
 | Logging | `structlog` | Structured logging (JSON in prod) |
 | Retry | `tenacity` | Resilient API calls |
 | Dev tools | `pytest`, `black`, `ruff`, `mypy`, `pre-commit` | Testing, formatting, linting |
@@ -270,9 +273,9 @@ api:
 ```
 
 ### 5.3 Config Access Pattern (`src/utils/config.py`)
-- `DatabaseSettings`, `APIKeySettings`, `AppSettings` — Pydantic models loading from env vars
-- `load_yaml_config()` — reads YAML from `configs/`
-- `get_settings()` — cached function returning `{"database": ..., "api_keys": ..., "app": ..., "config": ...}`
+- `DatabaseSettings`, `APIKeySettings`, `AppSettings` — Pydantic `BaseSettings` models loading from env vars
+- `get_config(config_name)` — cached YAML loader, returns dict from `configs/{name}.yaml`
+- `get_database_settings()`, `get_api_key_settings()`, `get_app_settings()` — individual cached accessors for each settings class
 
 ---
 
@@ -280,8 +283,8 @@ api:
 
 ### `src/utils/config.py` — Configuration management
 - Pydantic `BaseSettings` classes for database, API keys, app settings
-- YAML config loader for `configs/base.yaml`
-- `get_settings()` cached function combining all settings
+- `get_config()` — cached YAML config loader for `configs/base.yaml`
+- Individual cached accessors: `get_database_settings()`, `get_api_key_settings()`, `get_app_settings()`
 
 ### `src/utils/logging.py` — Structured logging
 - `setup_logging()` — call once at startup
@@ -290,9 +293,25 @@ api:
 - Usage: `logger = get_logger(__name__)` then `logger.info("event", key=value)`
 
 ### `src/data/database.py` — Database connectivity
-- `get_engine()` — cached SQLAlchemy engine (pool_size=5, max_overflow=10, pre_ping=True)
+- `get_session_factory()` — cached SQLAlchemy `sessionmaker` bound to a pooled engine (pool_size=5, max_overflow=10, pre_ping=True)
 - `get_session()` — context manager yielding a session with auto-commit/rollback
-- Usage: `with get_session() as session: session.query(...)`
+- Usage: `with get_session() as session: session.execute(...)`
+
+### `src/data/models.py` — SQLAlchemy ORM models
+- `Base` — declarative base for all ORM models
+- `RawStockPrice` — maps to `raw_stock_prices` table (id, ticker, date, OHLCV, data_source, timestamps)
+- Uses `mapped_column` with `Numeric`, `BigInteger`, `String` types matching the DB schema
+
+### `src/data/stock_ingestor.py` — Stock price ETL pipeline
+- `extract_stock_data(ticker, lookback_days)` — downloads OHLCV data from yfinance with tenacity retry (3 attempts, exponential backoff)
+- `transform_stock_data(df, ticker)` — normalizes yfinance multi-index output to flat, snake_case DataFrame matching DB schema
+- `load_stock_data(df)` — upserts records into `raw_stock_prices` using PostgreSQL `INSERT ... ON CONFLICT DO UPDATE`
+- `run_stock_ingestion(ticker, lookback_days)` — orchestrates extract → transform → load for a single ticker
+- `run_all_stocks()` — iterates over all configured tickers, catching failures per-ticker and logging a summary
+- `EmptyStockDataError` — custom exception for empty yfinance responses (not retried)
+
+### `scripts/run_ingestion.py` — Ingestion CLI entry point
+- Sets up logging via `setup_logging()` and calls `run_all_stocks()`
 
 ### Docker (`docker/docker-compose.yaml` + `docker/init.sql`)
 - Postgres 17 container named `stockpulse_db`
@@ -312,10 +331,9 @@ api:
 3. **Target variable** — Binary classification: `price_direction` = 1 if next-day close > today's close, else 0.
 4. **Feature versioning** — `feature_version` column in the `features` table allows schema evolution without breaking old data.
 5. **Model lifecycle** — Models go through `staging → production → archived` in `model_registry`.
-6. **Raw SQL schema** — Using raw SQL in `init.sql` (not SQLAlchemy ORM models). Database.py uses SQLAlchemy Core/session for queries only.
-7. **No ORM models defined yet** — The project uses raw SQL for schema creation and SQLAlchemy sessions for queries. ORM model classes (declarative base) have NOT been created yet. You may need to decide: continue with raw SQL queries or add SQLAlchemy ORM models.
-8. **Monitoring thresholds** — Alert if rolling accuracy < 52% or drift score > 0.1.
-9. **Docker for DB only (so far)** — Full dockerization (API, MLflow, scheduler) is a Phase 3 task.
+6. **Hybrid ORM + raw SQL** — Schema is created via raw SQL (`init.sql`), but SQLAlchemy ORM models (`src/data/models.py`) are used for Python-side inserts/queries. Currently only `RawStockPrice` is defined; additional ORM models should be added as new tables are accessed from Python.
+7. **Monitoring thresholds** — Alert if rolling accuracy < 52% or drift score > 0.1.
+8. **Docker for DB only (so far)** — Full dockerization (API, MLflow, scheduler) is a Phase 3 task.
 
 ---
 
@@ -323,7 +341,7 @@ api:
 
 | Phase | Description | Status | Completion |
 |-------|-------------|--------|------------|
-| Phase 1 | Data Pipeline & Feature Engineering | **In Progress** | ~30% |
+| Phase 1 | Data Pipeline & Feature Engineering | **In Progress** | ~50% |
 | Phase 2 | Model Training & Experiment Tracking | Not Started | 0% |
 | Phase 3 | Pipeline Automation & API Deployment | Not Started | 0% |
 | Phase 4 | Model Monitoring Dashboard | Not Started | 0% |
@@ -333,7 +351,7 @@ api:
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 1 | Setup Environment | **Done** | venv, pyproject.toml, .env, .gitignore, config system, structured logging |
-| 2 | Stock Price Data Ingestion | **Not Started** | Need: yfinance fetch script, store to `raw_stock_prices` |
+| 2 | Stock Price Data Ingestion | **Done** | Full ETL in `stock_ingestor.py`: extract (yfinance + retry), transform, load (upsert). ORM model in `models.py`. Runner script in `scripts/run_ingestion.py`. |
 | 3 | Financial News Ingestion | **Not Started** | Need: news API fetch, FinBERT sentiment, store to `raw_news_sentiment` |
 | 4 | Feature Engineering Pipeline | **Not Started** | Need: technical indicators, sentiment aggregation, target var, store to `features` |
 | 5 | Database Schema Design | **Done** | Full schema in `docker/init.sql`, 7 tables with indexes and triggers |
@@ -342,16 +360,7 @@ api:
 
 ## 9. What To Build Next (In Order)
 
-### Immediate: Phase 1, Task 2 — Stock Price Data Ingestion
-**Create `src/data/stock_ingestor.py`** (or similar):
-1. Read tickers from config (`configs/base.yaml` → `stocks.tickers`)
-2. Use `yfinance.download()` to fetch 1 year of daily OHLCV data per ticker
-3. Clean the DataFrame (handle multi-index from yfinance, rename columns to match schema)
-4. Insert into `raw_stock_prices` table using SQLAlchemy session (upsert on `ticker, date` conflict)
-5. Log progress with structlog
-6. Add retry logic with `tenacity` for API failures
-
-### Then: Phase 1, Task 3 — Financial News Ingestion
+### Immediate: Phase 1, Task 3 — Financial News Ingestion
 **Create `src/data/news_ingestor.py`**:
 1. Fetch headlines from Finnhub or Alpha Vantage news API (using API keys from config)
 2. Run each headline through FinBERT (`transformers` pipeline) for sentiment
@@ -387,7 +396,10 @@ cp .env.example .env
 # Edit .env with real API keys and DB credentials
 
 # 5. Verify DB connection
-python -c "from src.data.database import get_engine; print(get_engine().connect())"
+python -c "from src.data.database import get_session; print('DB OK')"
+
+# 6. Run stock price ingestion
+python scripts/run_ingestion.py
 ```
 
 ---
@@ -395,8 +407,14 @@ python -c "from src.data.database import get_engine; print(get_engine().connect(
 ## 11. Git History
 
 ```
+bbc70de  added etl pipeline
 abaeb1b  added database.py
 85b54ff  Initial project structure
 ```
 
-Two commits total. The project is in early stages. Branch: `master`. Main branch: `main`.
+Three commits total. The project is in early stages. Branch: `master`. Main branch: `main`.
+
+### Uncommitted Changes
+- **Modified:** `progress.md` — updated to reflect current project state
+- **Modified:** `src/data/stock_ingestor.py` — added `get_config` import, `run_stock_ingestion()`, `run_all_stocks()` functions, fixed `ckonfig` typo
+- **Untracked:** `scripts/run_ingestion.py` — CLI entry point for stock ingestion
