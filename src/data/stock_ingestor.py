@@ -106,6 +106,11 @@ def transform_stock_data(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         df: Raw DataFrame returned by extract_stock_data().
         ticker: Stock ticker symbol, e.g. "AAPL". Stored as a column value.
 
+    Note:
+        adj_close is left unpopulated (NULL in DB). yfinance >= 0.2.x no longer
+        returns adj_close as a separate column. The DB column is kept nullable
+        for backward compatibility and potential future use.
+
     Returns:
         Flat DataFrame with columns: date, open, high, low, close, volume,
         ticker, data_source.
